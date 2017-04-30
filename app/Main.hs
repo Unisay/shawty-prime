@@ -3,6 +3,7 @@
 module Main where
 
 import Control.Monad (replicateM)
+import Control.Monad.Trans.Reader
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString.Char8 as BC
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -17,22 +18,16 @@ alphaNum = ['A'..'Z'] ++ ['0'..'9']
 
 randomElement :: String -> IO Char
 randomElement xs = do
-  let maxIndex :: Int
-      maxIndex = length xs - 1
-  -- Right of arrow is IO Int, so randomDigit is Int
+  let maxIndex = length xs - 1
   randomDigit <- SR.randomRIO (0, maxIndex) :: IO Int
   return (xs !! randomDigit)
 
 shortyGen :: IO String
-shortyGen =
-  replicateM 7 (randomElement alphaNum)
+shortyGen = replicateM 7 (randomElement alphaNum)
 
-saveURI :: R.Connection
-        -> BC.ByteString
-        -> BC.ByteString
+saveURI :: R.Connection -> BC.ByteString -> BC.ByteString
         -> IO (Either R.Reply R.Status)
-saveURI conn shortURI uri =
-  R.runRedis conn $ R.set shortURI uri
+saveURI conn shortURI uri = R.runRedis conn $ R.set shortURI uri
 
 getURI  :: R.Connection
         -> BC.ByteString
@@ -62,22 +57,21 @@ shortyFound :: TL.Text -> TL.Text
 shortyFound tbs =
   TL.concat ["<a href=\"", tbs, "\">", tbs, "</a>"]
 
-app :: R.Connection
-    -> ScottyM ()
-app rConn = do
-  get "/" $ do
+app :: ReaderT R.Connection ScottyM ()
+app = do
+  ReaderT $ \rConn -> get "/" $ do
     uri <- param "uri"
     let parsedUri :: Maybe URI
         parsedUri = parseURI (TL.unpack uri)
     case parsedUri of
-      Just _  -> do
+      Just _ -> do
         shawty <- liftIO shortyGen
         let shorty = BC.pack shawty
             uri' = encodeUtf8 (TL.toStrict uri)
         resp <- liftIO (saveURI rConn shorty uri')
         html (shortyCreated resp shawty)
       Nothing -> text (shortyAintUri uri)
-  get "/:short" $ do
+  ReaderT $ \rConn -> get "/:short" $ do
     short <- param "short"
     uri <- liftIO (getURI rConn short)
     case uri of
@@ -91,4 +85,4 @@ app rConn = do
 main :: IO ()
 main = do
   rConn <- R.connect R.defaultConnectInfo
-  scotty 3000 (app rConn)
+  scotty 3000 $ runReaderT app rConn
